@@ -92,9 +92,22 @@ async function api(req, env, ctx) {
     await env.DB.prepare("INSERT INTO interactions (id, platform_id, kind, username, body, status) VALUES (?, ?, ?, ?, ?, 'new')").bind(uid(), null, "webhook", "instagram", JSON.stringify(payload).slice(0, 8000)).run();
     return json({ received: true });
   }
+  if (path === "/api/meta/connect" && req.method === "GET") {
+    if (!env.META_APP_ID || !env.META_APP_SECRET) return json({error:"Falta configurar META_APP_ID e META_APP_SECRET no Cloudflare."},503);
+    const redirect = `${url.origin}/api/meta/callback`;
+    const scopes = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_messages,instagram_business_manage_insights";
+    const state = uid();
+    const oauth = new URL("https://www.instagram.com/oauth/authorize");
+    oauth.search = new URLSearchParams({client_id:env.META_APP_ID,redirect_uri:redirect,response_type:"code",scope:scopes,state}).toString();
+    return new Response(null,{status:302,headers:{Location:oauth.toString(),"Set-Cookie":`ferruria_oauth_state=${state}; HttpOnly; Secure; SameSite=Lax; Path=/api/meta; Max-Age=600`,"Cache-Control":"no-store"}});
+  }
   if (path === "/api/meta/callback" && req.method === "GET") {
     const code = url.searchParams.get("code");
-    if (!code) return new Response("Autorização cancelada ou código ausente.", { status: 400 });
+    const state = url.searchParams.get("state");
+    const cookie = req.headers.get("cookie") || "";
+    const expectedState = cookie.split(";").map(x=>x.trim()).find(x=>x.startsWith("ferruria_oauth_state="))?.slice("ferruria_oauth_state=".length);
+    if (!state || !expectedState || state !== expectedState) return new Response("Estado OAuth inválido ou expirado. Tente conectar novamente.", {status:403,headers:{"Set-Cookie":"ferruria_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/api/meta; Max-Age=0"}});
+    if (!code) return new Response("Autorização cancelada ou código ausente.", { status: 400, headers:{"Set-Cookie":"ferruria_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/api/meta; Max-Age=0"} });
     if (!env.META_APP_ID || !env.META_APP_SECRET) return new Response("Configure META_APP_ID e META_APP_SECRET.", { status: 503 });
     const redirect = `${url.origin}/api/meta/callback`;
     const tokenUrl = new URL("https://api.instagram.com/oauth/access_token");
@@ -110,7 +123,7 @@ async function api(req, env, ctx) {
     const profile = await graph(env, "me", access, { fields: "user_id,username" });
     await env.DB.prepare("INSERT INTO settings (key,value,updated_at) VALUES ('ig_token',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at").bind(access, now()).run();
     await env.DB.prepare("INSERT INTO settings (key,value,updated_at) VALUES ('ig_user',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at").bind(JSON.stringify(profile), now()).run();
-    return Response.redirect(`${url.origin}/?connected=1`, 302);
+    return new Response(null,{status:302,headers:{Location:`${url.origin}/?connected=1`,"Set-Cookie":"ferruria_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/api/meta; Max-Age=0","Cache-Control":"no-store"}});
   }
   if (!auth(req, env)) return json({ error: "Não autorizado. Configure e envie o token de administrador." }, 401);
   if (path === "/api/state" && req.method === "GET") {
@@ -171,14 +184,6 @@ async function api(req, env, ctx) {
   if (path === "/api/characters/decision" && req.method === "POST") {
     const b=await body(req); if (!b.id || !["approved","rejected"].includes(b.status)) return json({error:"Dados inválidos."},400);
     await env.DB.prepare("UPDATE characters SET status=? WHERE id=?").bind(b.status,b.id).run(); return json({ok:true});
-  }
-  if (path === "/api/meta/connect" && req.method === "GET") {
-    if (!env.META_APP_ID) return json({error:"Falta configurar META_APP_ID e META_APP_SECRET no Cloudflare."},503);
-    const redirect = `${url.origin}/api/meta/callback`;
-    const scopes = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_messages,instagram_business_manage_insights";
-    const oauth = new URL("https://www.instagram.com/oauth/authorize");
-    oauth.search = new URLSearchParams({ client_id: env.META_APP_ID, redirect_uri: redirect, response_type: "code", scope: scopes, state: crypto.randomUUID() }).toString();
-    return Response.redirect(oauth.toString(),302);
   }
   if (path === "/api/meta/publish" && req.method === "POST") {
     const b=await body(req); const e=await one(env.DB,"SELECT * FROM episodes WHERE id=?",b.episode_id);
