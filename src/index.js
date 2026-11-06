@@ -16,6 +16,18 @@ function auth(req, env) {
   return req.headers.get("authorization") === `Bearer ${expected}`;
 }
 async function body(req) { try { return await req.json(); } catch { return {}; } }
+async function verifyMetaSignature(request, rawBody, appSecret) {
+  const signature = request.headers.get("x-hub-signature-256") || "";
+  if (!signature.startsWith("sha256=") || !appSecret) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(appSecret), {name:"HMAC",hash:"SHA-256"}, false, ["sign"]);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, rawBody));
+  const hex = [...digest].map(b=>b.toString(16).padStart(2,"0")).join("");
+  const supplied = signature.slice(7).toLowerCase();
+  if (hex.length !== supplied.length) return false;
+  let diff = 0;
+  for (let i=0;i<hex.length;i++) diff |= hex.charCodeAt(i) ^ supplied.charCodeAt(i);
+  return diff === 0;
+}
 async function rows(db, sql, ...args) { return (await db.prepare(sql).bind(...args).all()).results || []; }
 async function one(db, sql, ...args) { return db.prepare(sql).bind(...args).first(); }
 
@@ -87,8 +99,12 @@ async function api(req, env, ctx) {
     return new Response("Forbidden", { status: 403 });
   }
   if (path === "/api/meta/webhook" && req.method === "POST") {
-    const payload = await body(req);
-    // Store raw events for review. Do not auto-reply until webhook fields and app permissions are verified.
+    if (!env.META_APP_SECRET) return json({error:"Webhook não configurado."},503);
+    const raw = await req.arrayBuffer();
+    if (!await verifyMetaSignature(req, raw, env.META_APP_SECRET)) return json({error:"Assinatura do webhook inválida."},401);
+    let payload;
+    try { payload = JSON.parse(new TextDecoder().decode(raw)); } catch { return json({error:"JSON inválido."},400); }
+    // Eventos são armazenados para revisão; respostas automáticas não são enviadas nesta versão.
     await env.DB.prepare("INSERT INTO interactions (id, platform_id, kind, username, body, status) VALUES (?, ?, ?, ?, ?, 'new')").bind(uid(), null, "webhook", "instagram", JSON.stringify(payload).slice(0, 8000)).run();
     return json({ received: true });
   }
