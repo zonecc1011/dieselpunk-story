@@ -1,0 +1,21 @@
+name = "dieselpunk-story"
+main = "src/index.js"
+compatibility_date = "2026-11-06"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dieselpunk-story"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+APP_NAME = "A Cidade de Ferro"
+META_GRAPH_VERSION = "v26.0"
